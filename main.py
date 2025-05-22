@@ -153,7 +153,7 @@ class SlideWidget(QWidget):
 
 
         self.now_line=QFrame(self)
-        self.now_line.setGeometry(SIDEBAR_WIDTH,0,WINDOW_WIDTH-SIDEBAR_WIDTH,2)
+        self.now_line.setGeometry(SIDEBAR_WIDTH,0,WINDOW_WIDTH-SIDEBAR_WIDTH,4)
         self.now_line.setStyleSheet("background-color: red; border: none;")
         self.now_line.raise_()
         self.now_line.show()
@@ -371,8 +371,8 @@ class SlideWidget(QWidget):
         if event.key() == Qt.Key_Escape:
             self.hide_slide()
         elif event.key() == Qt.Key_R:
-            self.update_events(force=True)
             self.clear_events()
+            self.update_events(force=True)
             self.display_cached_events()
             self.raise_()
             self.show()
