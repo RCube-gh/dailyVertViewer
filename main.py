@@ -3,7 +3,7 @@ import sys
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QFrame, QHBoxLayout, QStackedWidget
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QFrame, QHBoxLayout, QStackedWidget, QSizePolicy
 from PyQt5.QtGui import QFont, QFontDatabase, QMovie
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, pyqtSignal, QThread
 import qt_material
@@ -56,9 +56,50 @@ SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 # グローバル変数としてウィジェット保持
 global_widget = None
 
+def get_today_range_unix_ms():
+    JST = timedelta(hours=9)
+    now = datetime.now()
+    today = datetime(now.year, now.month, now.day)
+    tomorrow = today + timedelta(days=1)
+
+    today_ms = int(today.timestamp() * 1000)
+    tomorrow_ms = int(tomorrow.timestamp() * 1000)
+    return today_ms, tomorrow_ms
+
+def fetch_today_incomplete_tasks():
+    incomplete=[]
+    list_id = os.getenv("CLICKUP_LIST_ID")
+    token = os.getenv("CLICKUP_API_TOKEN")
+
+    today_ms, tomorrow_ms = get_today_range_unix_ms()
+
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    headers = {
+        "Authorization": token,
+        "Accept": "application/json"
+    }
+
+    params = {
+        "archived": "false",
+        "due_date_gt": today_ms,
+        "due_date_lt": tomorrow_ms
+    }
+
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        today_tasks = response.json().get("tasks", [])
+        for task in today_tasks:
+            status=task.get("status",{}).get("status","").lower()
+            not_done=status not in ["done","complete","closed"]
+            if not_done:
+                incomplete.append(task)
+        return incomplete
+    else:
+        print(f"[ERROR] Failed to fetch tasks: {response.status_code} - {response.text}")
+        return []
 
 class SafeFullFetcherThread(QThread):
-    finished=pyqtSignal(list,list,date)#events,toggl_entries,today
+    finished=pyqtSignal(list,list,list,date)#events,toggl_entries,today
     def __init__(self,token_json_str):
         super().__init__()
         self.token_json_str=token_json_str
@@ -72,9 +113,11 @@ class SafeFullFetcherThread(QThread):
             calendar_colors = get_calendar_colors(service)
             events = fetch_today_events(service, calendar_colors)
             toggl_entries = get_structured_toggl_entries()
+            clickup_tasks=fetch_today_incomplete_tasks()
             today = datetime.now(JST).date()
 
-            self.finished.emit(events, toggl_entries, today)
+
+            self.finished.emit(events, toggl_entries,clickup_tasks, today)
 
         except Exception as e:
             print(f"[ERROR] SafeFullFetcherThread failed: {e}")
@@ -93,7 +136,9 @@ class SlideWidget(QWidget):
         self.trigger_hide_slide.connect(self.hide_slide)
         self.cached_date=None
         self.cached_events=[]
+        self.cached_allday_events=[]
         self.cached_toggl_entries=[]
+        self.cached_clickup_tasks=[]
         self.init_ui()
 
     def init_ui(self):
@@ -176,6 +221,7 @@ class SlideWidget(QWidget):
         self.page_todo.setStyleSheet("background-color:#2b2b2b;")
         layout_todo = QVBoxLayout(self.page_todo)
         self.todo_layout = layout_todo  # 保存しておく
+        self.todo_layout.setAlignment(Qt.AlignTop)
         self.render_todo_content()  # 最初の表示
         #layout_todo=QVBoxLayout(self.page_todo)
         #title=QLabel("Today's Events")
@@ -227,9 +273,11 @@ class SlideWidget(QWidget):
         elif self.display_mode=="todo":
             self.clear_events()
             self.stack.setCurrentWidget(self.page_todo)
+            self.render_todo_content()
 
 
     def render_todo_content(self):
+        print("render_todo")
         # 1. 既存のレイアウトの中身を全消し
         for i in reversed(range(self.todo_layout.count())):
             widget = self.todo_layout.itemAt(i).widget()
@@ -237,14 +285,15 @@ class SlideWidget(QWidget):
                 widget.setParent(None)
 
         # 2. セクションラベル追加
-        self.todo_layout.addWidget(self.make_section_label("🗓️ All-Day Events"))
+        self.todo_layout.addWidget(self.make_section_label("🗓️ Events"))
 
-        for i in range(3):
-            self.todo_layout.addWidget(self.make_task_card(f"All-Day Event {i+1}"))
+        for allday_event in self.cached_allday_events:
+            self.todo_layout.addWidget(self.make_task_card(allday_event.get("summary",[])))
 
-        self.todo_layout.addWidget(self.make_section_label("✅ Tasks"))
-        for i in range(5):
-            self.todo_layout.addWidget(self.make_task_card(f"Task {i+1}: Write Code"))
+        self.todo_layout.addWidget(self.make_section_label("📝 Tasks"))
+        for task in self.cached_clickup_tasks:
+            title = task.get("name", "(Untitled)")
+            self.todo_layout.addWidget(self.make_task_card(title))
 
     def make_section_label(self, text):
         label = QLabel(text)
@@ -259,6 +308,7 @@ class SlideWidget(QWidget):
             padding: 8px;
             margin-bottom: 8px;
         """)
+        frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)  # ← ここ追加！
         label = QLabel(text)
         label.setStyleSheet("color: white; font-size: 16px;")
         layout = QVBoxLayout(frame)
@@ -275,6 +325,7 @@ class SlideWidget(QWidget):
         self.now_line.move(SIDEBAR_WIDTH,y)
 
     def add_event(self, title, hour, minute, duration,color="#a2d5f2",side='left'):
+        print("add_event")
         start_y = int(((hour + minute / 60) - START_HOUR) * PIXELS_PER_HOUR)
         height = int(duration * PIXELS_PER_HOUR)
 
@@ -324,11 +375,8 @@ class SlideWidget(QWidget):
                 )
 
 
-
-
-
-
     def update_events(self,force=False):
+        print("update_events")
         self.start_loading()
         today=datetime.now(JST).date()
         if force or self.cached_date!=today or not self.cached_events:
@@ -344,17 +392,29 @@ class SlideWidget(QWidget):
         else:
             self.stop_loading()
 
+    def is_all_day_event(self,event):
+        return "date" in event.get("start", {})
 
-    def handle_fetched_data(self,events,toggl_entries,today):
+    def handle_fetched_data(self,events,toggl_entries,clickup_tasks,today):
+        normal_events=[]
+        allday_events=[]
         self.cached_date=today
-        self.cached_events=events
+        for event in events:
+            if self.is_all_day_event(event):
+                allday_events.append(event)
+            else:
+                normal_events.append(event)
+        self.cached_events=normal_events
+        self.cached_allday_events=allday_events
         self.cached_toggl_entries=toggl_entries
+        self.cached_clickup_tasks=clickup_tasks
         self.stop_loading()
-        self.display_cached_events()
+        self.display_content()
         self.loading_overlay.raise_()
         self.loading_spinner.raise_()
 
     def display_cached_events(self):
+        print("display_cached_events")
         self.add_hour_labels()
         self.add_hour_lines()
         for event in self.cached_events:
@@ -390,12 +450,18 @@ class SlideWidget(QWidget):
         self.view_mode="calendar"
         self.clear_events()
         self.update_events()
-        self.display_cached_events()
+        self.display_content()
         self.show()
         self.raise_()
         self.activateWindow()
         self.anim_in.setStartValue(self.pos())
         self.anim_in.start()
+
+    def display_content(self):
+        if self.display_mode=='calendar':
+            self.display_cached_events()
+        elif self.display_mode=='todo':
+            self.render_todo_content()
 
     def hide_slide(self):
         self.anim_out.setStartValue(self.pos())
@@ -462,7 +528,6 @@ class SlideWidget(QWidget):
         elif event.key() == Qt.Key_R:
             self.clear_events()
             self.update_events(force=True)
-            self.display_cached_events()
             self.raise_()
             self.show()
             self.activateWindow()
