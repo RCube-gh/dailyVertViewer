@@ -299,13 +299,20 @@ class SlideWidget(QWidget):
         # 2. セクションラベル追加
         self.todo_layout.addWidget(self.make_section_label("🗓️ Events"))
 
-        for allday_event in self.cached_allday_events:
-            self.todo_layout.addWidget(self.make_task_card(allday_event.get("summary",[])))
+        if self.cached_allday_events:
+            for allday_event in self.cached_allday_events:
+                self.todo_layout.addWidget(self.make_task_card(allday_event.get("summary",[])))
+        else:
+            self.todo_layout.addWidget(self.make_info_card("No Events"))
+
 
         self.todo_layout.addWidget(self.make_section_label("📝 Tasks"))
-        for task in self.cached_clickup_tasks:
-            title = task.get("name", "(Untitled)")
-            self.todo_layout.addWidget(self.make_task_card(title))
+        if self.cached_clickup_tasks:
+            for task in self.cached_clickup_tasks:
+                title = task.get("name", "(Untitled)")
+                self.todo_layout.addWidget(self.make_task_card(title))
+        else:
+            self.todo_layout.addWidget(self.make_info_card("No Tasks"))
 
     def make_section_label(self, text):
         label = QLabel(text)
@@ -327,7 +334,20 @@ class SlideWidget(QWidget):
         layout.addWidget(label)
         return frame
 
-
+    def make_info_card(self, text):
+        frame = QFrame()
+        frame.setStyleSheet("""
+            background-color: #2a2a2a;
+            border :none;
+            padding: 10px;
+            margin-bottom: 8px;
+        """)
+        label = QLabel(text)
+        label.setStyleSheet("color: #aaaaaa; font-size: 24px; font-style: italic;")
+        label.setAlignment(Qt.AlignCenter)
+        layout = QVBoxLayout(frame)
+        layout.addWidget(label)
+        return frame
 
 
 
