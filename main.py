@@ -20,6 +20,8 @@ from dotenv import load_dotenv
 from dateutil import parser
 import json
 
+from winotify import Notification
+
 load_dotenv()
 
 JST = timezone(timedelta(hours=9))
@@ -122,6 +124,16 @@ class SafeFullFetcherThread(QThread):
         except Exception as e:
             print(f"[ERROR] SafeFullFetcherThread failed: {e}")
 
+class ToastRedirector:
+    def write(self,message):
+        message=message.strip()
+        if message:
+            toast=Notification(app_id="dailyVertViewer",title="stdout",msg=message)
+            toast.show()
+    def flush(self):
+        pass
+sys.stdout=ToastRedirector()
+
 
 
 class SlideWidget(QWidget):
@@ -185,8 +197,8 @@ class SlideWidget(QWidget):
         self.loading_overlay.hide()
 
         # ▼ ④ 起動チェックログ
-        print("[DEBUG] movie valid?", self.loading_movie.isValid())
-        QTimer.singleShot(1000, lambda: print("[DEBUG] movie frame:", self.loading_movie.currentFrameNumber()))
+        #print("[DEBUG] movie valid?", self.loading_movie.isValid())
+        #QTimer.singleShot(1000, lambda: print("[DEBUG] movie frame:", self.loading_movie.currentFrameNumber()))
 
 
         self.left_width=LEFT_WIDTH
@@ -277,7 +289,7 @@ class SlideWidget(QWidget):
 
 
     def render_todo_content(self):
-        print("render_todo")
+        #print("render_todo")
         # 1. 既存のレイアウトの中身を全消し
         for i in reversed(range(self.todo_layout.count())):
             widget = self.todo_layout.itemAt(i).widget()
@@ -325,7 +337,7 @@ class SlideWidget(QWidget):
         self.now_line.move(SIDEBAR_WIDTH,y)
 
     def add_event(self, title, hour, minute, duration,color="#a2d5f2",side='left'):
-        print("add_event")
+        #print("add_event")
         start_y = int(((hour + minute / 60) - START_HOUR) * PIXELS_PER_HOUR)
         height = int(duration * PIXELS_PER_HOUR)
 
@@ -376,7 +388,7 @@ class SlideWidget(QWidget):
 
 
     def update_events(self,force=False):
-        print("update_events")
+        #print("update_events")
         self.start_loading()
         today=datetime.now(JST).date()
         if force or self.cached_date!=today or not self.cached_events:
@@ -414,7 +426,7 @@ class SlideWidget(QWidget):
         self.loading_spinner.raise_()
 
     def display_cached_events(self):
-        print("display_cached_events")
+        #print("display_cached_events")
         self.add_hour_labels()
         self.add_hour_lines()
         for event in self.cached_events:
@@ -495,11 +507,11 @@ class SlideWidget(QWidget):
     def advance_spinner_frame(self):
         current = self.loading_movie.currentFrameNumber()
         success = self.loading_movie.jumpToNextFrame()
-        print(f"[DEBUG] frame jumped: {current} → {self.loading_movie.currentFrameNumber()} | success={success}")
+        #print(f"[DEBUG] frame jumped: {current} → {self.loading_movie.currentFrameNumber()} | success={success}")
 
 
     def start_loading(self):
-        print("start LOADING>>>>>>>>>")
+        #print("start LOADING>>>>>>>>>")
         self.loading_layer.raise_()
         self.loading_layer.show()
         self.loading_overlay.show()
@@ -514,10 +526,10 @@ class SlideWidget(QWidget):
 
 
     def stop_loading(self):
-        print("end LOADING<<<<<<<<<<<")
+        #print("end LOADING<<<<<<<<<<<")
         if hasattr(self, 'movie_timer') and self.movie_timer.isActive():
             self.movie_timer.stop()
-            print("[DEBUG] movie_timer stopped")
+            #print("[DEBUG] movie_timer stopped")
         self.loading_movie.stop()
         self.loading_spinner.hide()
         self.loading_overlay.hide()
