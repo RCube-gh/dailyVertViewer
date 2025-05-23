@@ -3,7 +3,7 @@ import sys
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QFrame, QHBoxLayout
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QFrame, QHBoxLayout, QStackedWidget
 from PyQt5.QtGui import QFont, QFontDatabase, QMovie
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, pyqtSignal, QThread
 import qt_material
@@ -148,12 +148,17 @@ class SlideWidget(QWidget):
         self.right_width=WINDOW_WIDTH-SIDEBAR_WIDTH-LEFT_WIDTH
         self.right_x=SIDEBAR_WIDTH+self.left_width
 
+        self.display_mode="calendar" # "calendar" or "todo"
         self.view_mode="calendar" #or "compare"
+        self.stack=QStackedWidget(self)
+        self.stack.setGeometry(0,0,WINDOW_WIDTH,WINDOW_HEIGHT)
 
-
-
-        self.now_line=QFrame(self)
-        self.now_line.setGeometry(SIDEBAR_WIDTH,0,WINDOW_WIDTH-SIDEBAR_WIDTH,4)
+        # Calendar Page
+        self.page_calendar=QWidget()
+        self.page_calendar.setObjectName("calendar_page")
+        self.page_calendar.setStyleSheet("background-color:#1e1e1e;")
+        self.now_line=QFrame(self.page_calendar)
+        self.now_line.setGeometry(SIDEBAR_WIDTH,0,WINDOW_WIDTH-SIDEBAR_WIDTH,3)
         self.now_line.setStyleSheet("background-color: red; border: none;")
         self.now_line.raise_()
         self.now_line.show()
@@ -163,6 +168,38 @@ class SlideWidget(QWidget):
         self.now_timer.timeout.connect(self.update_now_line)
         self.update_now_line()
         self.now_timer.start(60000)
+
+
+        # Todo Page
+        self.page_todo=QWidget()
+        self.page_todo.setObjectName("todo_page")
+        self.page_todo.setStyleSheet("background-color:#2b2b2b;")
+        layout_todo = QVBoxLayout(self.page_todo)
+        self.todo_layout = layout_todo  # 保存しておく
+        self.render_todo_content()  # 最初の表示
+        #layout_todo=QVBoxLayout(self.page_todo)
+        #title=QLabel("Today's Events")
+        #title.setStyleSheet("color: white;font-size:20px;")
+        #layout_todo.addWidget(title)
+        #for i in range(3):
+        #    allday_label=QLabel(f"All-Day event {i+1}")
+        #    allday_label.setStyleSheet("color: white;font-size:16px;")
+        #    layout_todo.addWidget(allday_label)
+
+        #separator=QLabel("Today's Tasks")
+        #separator.setStyleSheet("color: white;font-size:18px;")
+        #layout_todo.addWidget(separator)
+        #for i in range(5):
+        #    task_label=QLabel(f"Task{i+1}:aaaa")
+        #    task_label.setStyleSheet("color: white; font-size:16px;")
+        #    layout_todo.addWidget(task_label)
+
+        # add to stack
+        self.stack.addWidget(self.page_calendar)
+        self.stack.addWidget(self.page_todo)
+        self.stack.setCurrentWidget(self.page_calendar)
+
+
 
         #self.add_hour_lines()
         #self.add_hour_labels()#DEBUG
@@ -174,16 +211,62 @@ class SlideWidget(QWidget):
             self.hour_labels_added=True
             self.add_hour_labels()
     def update_display_mode(self):
-        if self.view_mode=="calendar":
+        if self.display_mode=="calendar":
+            self.stack.setCurrentWidget(self.page_calendar)
+            if self.view_mode=="calendar":
+                self.clear_events()
+                self.now_line.show()
+                self.display_cached_events()
+                self.show()
+                self.raise_()
+                self.activateWindow()
+            elif self.view_mode=="compare":
+                half=(WINDOW_WIDTH-SIDEBAR_WIDTH)//2
+                self.clear_events()
+                self.display_cached_events()
+        elif self.display_mode=="todo":
             self.clear_events()
-            self.display_cached_events()
-            self.show()
-            self.raise_()
-            self.activateWindow()
-        elif self.view_mode=="compare":
-            half=(WINDOW_WIDTH-SIDEBAR_WIDTH)//2
-            self.clear_events()
-            self.display_cached_events()
+            self.stack.setCurrentWidget(self.page_todo)
+
+
+    def render_todo_content(self):
+        # 1. 既存のレイアウトの中身を全消し
+        for i in reversed(range(self.todo_layout.count())):
+            widget = self.todo_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+
+        # 2. セクションラベル追加
+        self.todo_layout.addWidget(self.make_section_label("🗓️ All-Day Events"))
+
+        for i in range(3):
+            self.todo_layout.addWidget(self.make_task_card(f"All-Day Event {i+1}"))
+
+        self.todo_layout.addWidget(self.make_section_label("✅ Tasks"))
+        for i in range(5):
+            self.todo_layout.addWidget(self.make_task_card(f"Task {i+1}: Write Code"))
+
+    def make_section_label(self, text):
+        label = QLabel(text)
+        label.setStyleSheet("color: #bbbbbb; font-size: 18px; font-weight: bold; margin-top: 10px;")
+        return label
+
+    def make_task_card(self, text):
+        frame = QFrame()
+        frame.setStyleSheet("""
+            background-color: #3a3a3a;
+            border-radius: 8px;
+            padding: 8px;
+            margin-bottom: 8px;
+        """)
+        label = QLabel(text)
+        label.setStyleSheet("color: white; font-size: 16px;")
+        layout = QVBoxLayout(frame)
+        layout.addWidget(label)
+        return frame
+
+
+
 
 
     def update_now_line(self):
@@ -205,9 +288,11 @@ class SlideWidget(QWidget):
             width=WINDOW_WIDTH-SIDEBAR_WIDTH
 
         event_frame = QFrame(self)
+        event_frame.setProperty("is_event",True)
         event_frame.setGeometry(x_offset, start_y, width, height)
         event_frame.setStyleSheet(f"background-color: {color}; border: None; border-radius: 5px;")
         event_frame.show()
+        event_frame.raise_()
 
         label = QLabel(title, event_frame)
         label.move(10, 5)
@@ -217,7 +302,8 @@ class SlideWidget(QWidget):
         for child in self.findChildren(QFrame):
             if child==self.now_line or child.property("permanent")==True:
                 continue
-            child.deleteLater()
+            if child.property("is_event")==True:
+                child.deleteLater()
 
     def add_toggl_log(self):
         #self.add_event("Coding", 9, 30, 1.5, color="#f28b82", side='left')
@@ -269,6 +355,8 @@ class SlideWidget(QWidget):
         self.loading_spinner.raise_()
 
     def display_cached_events(self):
+        self.add_hour_labels()
+        self.add_hour_lines()
         for event in self.cached_events:
 
             start_time=event.get('start_time')
@@ -284,9 +372,8 @@ class SlideWidget(QWidget):
             color=event.get('color','#a2d5f2')
             side='both' if self.view_mode=='calendar' else 'right'
             self.add_event(event.get('summary', 'No Title'), hour, minute, duration,color,side=side)
+
         self.now_line.raise_()
-        self.add_hour_labels()
-        self.add_hour_lines()
         if self.view_mode=="compare":
             self.add_toggl_log()
         self.loading_layer.raise_()
@@ -316,24 +403,26 @@ class SlideWidget(QWidget):
         self.anim_out.finished.connect(self.hide)
 
     def add_hour_labels(self):
+        self.hour_labels=[]
         for hour in range(START_HOUR, END_HOUR):
             y = int((hour - START_HOUR) * PIXELS_PER_HOUR)
-            label = QLabel(f"{hour:02d}:00", self)
+            label = QLabel(f"{hour:02d}:00", self.page_calendar)
             label.move(10, y-10)
             label.setFixedSize(SIDEBAR_WIDTH - 10, 20)
             label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             label.setStyleSheet("color: white;font-size: 12px;")
             label.show()
             label.raise_()
+            self.hour_labels.append(label)
     def add_hour_lines(self):
         self.hour_lines=[]
         for hour in range(START_HOUR,END_HOUR+1):
             y=int((hour-START_HOUR)*PIXELS_PER_HOUR)
-            line=QFrame(self)
+            line=QFrame(self.page_calendar)
             line.setGeometry(SIDEBAR_WIDTH,y,WINDOW_WIDTH-SIDEBAR_WIDTH,1)
             line.setStyleSheet("background-color:#444;")
-            line.lower()
             line.show()
+            line.raise_()
             self.hour_lines.append(line)
 
 
@@ -377,11 +466,17 @@ class SlideWidget(QWidget):
             self.raise_()
             self.show()
             self.activateWindow()
-        elif event.key()==Qt.Key_T:
+        elif event.key()==Qt.Key_T and self.display_mode=='calendar':
             if self.view_mode=='calendar':
                 self.view_mode='compare'
             elif self.view_mode=='compare':
                 self.view_mode='calendar'
+            self.update_display_mode()
+        elif event.key()==Qt.Key_D:
+            if self.display_mode=='calendar':
+                self.display_mode='todo'
+            elif self.display_mode=='todo':
+                self.display_mode='calendar'
             self.update_display_mode()
 
 
