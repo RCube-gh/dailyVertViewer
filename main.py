@@ -58,8 +58,46 @@ SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 # グローバル変数としてウィジェット保持
 global_widget = None
 
+
+
+
+
+def fetch_all_clickup_tasks():
+    list_id = os.getenv("CLICKUP_LIST_ID")
+    token = os.getenv("CLICKUP_API_TOKEN")
+
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    headers = {
+        "Authorization": token,
+        "Accept": "application/json"
+    }
+    params = {
+        "archived": "false",
+        "subtasks": "true"
+    }
+
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        return response.json().get("tasks", [])
+    else:
+        print(f"[ERROR] Failed to fetch tasks: {response.status_code} - {response.text}")
+        return []
+
+
+def get_effective_due_date(task, parent_lookup):
+    due = task.get("due_date")
+    if due:
+        return int(due)
+    
+    parent_id = task.get("parent")
+    if parent_id and parent_id in parent_lookup:
+        parent_due = parent_lookup[parent_id].get("due_date")
+        if parent_due:
+            return int(parent_due)
+    
+    return None
+
 def get_today_range_unix_ms():
-    JST = timedelta(hours=9)
     now = datetime.now()
     today = datetime(now.year, now.month, now.day)
     tomorrow = today + timedelta(days=1)
@@ -68,37 +106,14 @@ def get_today_range_unix_ms():
     tomorrow_ms = int(tomorrow.timestamp() * 1000)
     return today_ms, tomorrow_ms
 
-def fetch_today_incomplete_tasks():
-    incomplete=[]
-    list_id = os.getenv("CLICKUP_LIST_ID")
-    token = os.getenv("CLICKUP_API_TOKEN")
+def is_due_today(task,parent_lookup,today_ms,tomorrow_ms):
+    due = get_effective_due_date(task, parent_lookup)
+    return due and today_ms <= due < tomorrow_ms
 
-    today_ms, tomorrow_ms = get_today_range_unix_ms()
 
-    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
-    headers = {
-        "Authorization": token,
-        "Accept": "application/json"
-    }
 
-    params = {
-        "archived": "false",
-        "due_date_gt": today_ms,
-        "due_date_lt": tomorrow_ms
-    }
 
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code == 200:
-        today_tasks = response.json().get("tasks", [])
-        for task in today_tasks:
-            status=task.get("status",{}).get("status","").lower()
-            not_done=status not in ["done","complete","closed"]
-            if not_done:
-                incomplete.append(task)
-        return incomplete
-    else:
-        print(f"[ERROR] Failed to fetch tasks: {response.status_code} - {response.text}")
-        return []
+
 
 class SafeFullFetcherThread(QThread):
     finished=pyqtSignal(list,list,list,date)#events,toggl_entries,today
@@ -115,7 +130,7 @@ class SafeFullFetcherThread(QThread):
             calendar_colors = get_calendar_colors(service)
             events = fetch_today_events(service, calendar_colors)
             toggl_entries = get_structured_toggl_entries()
-            clickup_tasks=fetch_today_incomplete_tasks()
+            clickup_tasks=fetch_all_clickup_tasks()
             today = datetime.now(JST).date()
 
 
@@ -150,7 +165,8 @@ class SlideWidget(QWidget):
         self.cached_events=[]
         self.cached_allday_events=[]
         self.cached_toggl_entries=[]
-        self.cached_clickup_tasks=[]
+        self.cached_parent_tasks=[]
+        self.cached_subtask_map={}
         self.init_ui()
 
     def init_ui(self):
@@ -305,18 +321,25 @@ class SlideWidget(QWidget):
         else:
             self.todo_layout.addWidget(self.make_info_card("No Events"))
 
+        #for parent in parent_tasks:
+        #    print("🔹", parent["name"])
+        #    for sub in subtask_map.get(parent["id"], []):
+        #        print("   ↳", sub["name"])
 
         self.todo_layout.addWidget(self.make_section_label("📝 Tasks"))
-        if self.cached_clickup_tasks:
-            for task in self.cached_clickup_tasks:
-                title = task.get("name", "(Untitled)")
+        if self.cached_parent_tasks or self.cached_subtask_map:
+            for parent in self.cached_parent_tasks:
+                title = parent.get("name", "(Untitled)")
                 self.todo_layout.addWidget(self.make_task_card(title))
+                for sub in self.cached_subtask_map.get(parent["id"],[]):
+                    title = sub.get("name", "(Untitled)")
+                    self.todo_layout.addWidget(self.make_subtask_card(title))
         else:
             self.todo_layout.addWidget(self.make_info_card("No Tasks"))
 
     def make_section_label(self, text):
         label = QLabel(text)
-        label.setStyleSheet("color: #bbbbbb; font-size: 18px; font-weight: bold; margin-top: 10px;")
+        label.setStyleSheet("color: #bbbbbb; font-size: 26px; font-weight: bold; margin-top: 10px;")
         return label
 
     def make_task_card(self, text):
@@ -325,12 +348,32 @@ class SlideWidget(QWidget):
             background-color: #3a3a3a;
             border-radius: 8px;
             padding: 8px;
-            margin-bottom: 8px;
+            margin-top: 8px;
         """)
         frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)  # ← ここ追加！
         label = QLabel(text)
-        label.setStyleSheet("color: white; font-size: 16px;")
+        label.setStyleSheet("color: white; font-size: 22px;margin-bottom:12px;")
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        label.setWordWrap(True)
         layout = QVBoxLayout(frame)
+        layout.setAlignment(Qt.AlignVCenter)
+        layout.addWidget(label)
+        return frame
+
+    def make_subtask_card(self, text):
+        frame = QFrame()
+        frame.setStyleSheet("""
+            background-color: #2d2d2d;
+            border-radius: 6px;
+            padding: 4px;
+            margin: 2px 0 2px 20px;  /* ← インデント */
+        """)
+        label = QLabel(f"↳ {text}")
+        label.setStyleSheet("color: #cccccc; font-size: 20px;")
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        layout = QVBoxLayout(frame)
+        layout.setAlignment(Qt.AlignVCenter)
         layout.addWidget(label)
         return frame
 
@@ -343,7 +386,7 @@ class SlideWidget(QWidget):
             margin-bottom: 8px;
         """)
         label = QLabel(text)
-        label.setStyleSheet("color: #aaaaaa; font-size: 24px; font-style: italic;")
+        label.setStyleSheet("color: #aaaaaa; font-size: 26px; font-style: italic;")
         label.setAlignment(Qt.AlignCenter)
         layout = QVBoxLayout(frame)
         layout.addWidget(label)
@@ -439,7 +482,23 @@ class SlideWidget(QWidget):
         self.cached_events=normal_events
         self.cached_allday_events=allday_events
         self.cached_toggl_entries=toggl_entries
-        self.cached_clickup_tasks=clickup_tasks
+
+        #Clickup
+        today_ms, tomorrow_ms = get_today_range_unix_ms()
+        parent_lookup = {task["id"]: task for task in clickup_tasks}
+        today_tasks = [t for t in clickup_tasks if is_due_today(t,parent_lookup,today_ms,tomorrow_ms)]
+        parent_tasks = []
+        subtask_map = {}
+
+        for task in today_tasks:
+            if task.get("parent"):
+                subtask_map.setdefault(task["parent"], []).append(task)
+            else:
+                parent_tasks.append(task)
+
+        self.cached_parent_tasks=parent_tasks
+        self.cached_subtask_map=subtask_map
+
         self.stop_loading()
         self.display_content()
         self.loading_overlay.raise_()
@@ -479,7 +538,9 @@ class SlideWidget(QWidget):
             self.update_events()
         if self.isVisible():
             return
+        self.display_mode="calendar"
         self.view_mode="calendar"
+        self.stack.setCurrentWidget(self.page_calendar)
         self.clear_events()
         self.update_events()
         self.display_content()
