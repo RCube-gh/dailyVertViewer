@@ -8,6 +8,7 @@ from PyQt5.QtGui import QFont, QFontDatabase, QMovie
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, pyqtSignal, QThread
 import qt_material
 import keyboard  # pip install keyboard
+from pynput import keyboard as pkb
 
 from datetime import datetime, timedelta, timezone,date
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -147,7 +148,13 @@ class ToastRedirector:
             toast.show()
     def flush(self):
         pass
+
+
+
+
+
 sys.stdout=ToastRedirector()
+#sys.stdout=sys.__stdout__
 
 
 
@@ -156,9 +163,10 @@ class SlideWidget(QWidget):
     trigger_hide_slide = pyqtSignal()
 
 
-    def __init__(self,service=None):
+    def __init__(self,app,service=None):
         super().__init__()
         self.service = service or get_calendar_service()
+        self.app=app
         self.trigger_slide_in.connect(self.slide_in)
         self.trigger_hide_slide.connect(self.hide_slide)
         self.cached_date=None
@@ -234,6 +242,7 @@ class SlideWidget(QWidget):
         self.now_line.setGeometry(SIDEBAR_WIDTH,0,WINDOW_WIDTH-SIDEBAR_WIDTH,3)
         self.now_line.setStyleSheet("background-color: red; border: none;")
         self.now_line.raise_()
+        #print("now_line_raise")
         self.now_line.show()
 
 
@@ -413,7 +422,7 @@ class SlideWidget(QWidget):
         elif side=='both':
             width=WINDOW_WIDTH-SIDEBAR_WIDTH
 
-        event_frame = QFrame(self)
+        event_frame = QFrame(self.page_calendar)
         event_frame.setProperty("is_event",True)
         event_frame.setGeometry(x_offset, start_y, width, height)
         event_frame.setStyleSheet(f"background-color: {color}; border: None; border-radius: 5px;")
@@ -455,6 +464,7 @@ class SlideWidget(QWidget):
         self.start_loading()
         today=datetime.now(JST).date()
         if force or self.cached_date!=today or not self.cached_events:
+            #print("fetch data for update")
             #self.calendar_colors=get_calendar_colors(self.service)
             #self.cached_events=fetch_today_events(self.service,self.calendar_colors)
             #self.cached_toggl_entries=get_structured_toggl_entries()
@@ -524,9 +534,11 @@ class SlideWidget(QWidget):
             side='both' if self.view_mode=='calendar' else 'right'
             self.add_event(event.get('summary', 'No Title'), hour, minute, duration,color,side=side)
 
-        self.now_line.raise_()
         if self.view_mode=="compare":
             self.add_toggl_log()
+        self.update_now_line()
+        self.now_line.raise_()
+        #print("now_line_raise")
         self.loading_layer.raise_()
         self.loading_overlay.raise_()
         self.loading_spinner.raise_()
@@ -534,21 +546,32 @@ class SlideWidget(QWidget):
 
 
     def slide_in(self):
-        if date.today()!=self.cached_date:
-            self.update_events()
+        init_screen_dependent_values(self.app)
+        self.setGeometry(START_X,Y_POSITION,WINDOW_WIDTH,WINDOW_HEIGHT)
+
+        today = date.today()
+        is_today_cached = (self.cached_date == today)
+        
+        if not is_today_cached:
+            self.update_events()  # ← 非同期取得＆描画
         if self.isVisible():
             return
-        self.display_mode="calendar"
-        self.view_mode="calendar"
+
+        self.display_mode = "calendar"
+        self.view_mode = "calendar"
         self.stack.setCurrentWidget(self.page_calendar)
         self.clear_events()
-        self.update_events()
-        self.display_content()
+
+        #self.update_events()
+        if is_today_cached:
+            self.display_content()  # ← キャッシュが使えるときだけ即描画！
+
         self.show()
         self.raise_()
         self.activateWindow()
         self.anim_in.setStartValue(self.pos())
         self.anim_in.start()
+
 
     def display_content(self):
         if self.display_mode=='calendar':
@@ -562,6 +585,10 @@ class SlideWidget(QWidget):
         self.anim_out.finished.connect(self.hide)
 
     def add_hour_labels(self):
+        if hasattr(self,'hour_labels'):
+            for label in self.hour_labels:
+                label.deleteLater()
+
         self.hour_labels=[]
         for hour in range(START_HOUR, END_HOUR):
             y = int((hour - START_HOUR) * PIXELS_PER_HOUR)
@@ -574,6 +601,9 @@ class SlideWidget(QWidget):
             label.raise_()
             self.hour_labels.append(label)
     def add_hour_lines(self):
+        if hasattr(self,'hour_lines'):
+            for line in self.hour_lines:
+                line.deleteLater()
         self.hour_lines=[]
         for hour in range(START_HOUR,END_HOUR+1):
             y=int((hour-START_HOUR)*PIXELS_PER_HOUR)
@@ -666,13 +696,18 @@ def run_http_server():
     server = HTTPServer(('localhost', HTTP_PORT), RequestHandler)
     server.serve_forever()
 
+
 def run_hotkey_listener():
-    global global_widget
-    while True:
-        keyboard.wait('ctrl+alt+c')
+    def on_hotkey():
+        #print("[HOTKEY] Ctrl+Alt+C pressed!")
         if global_widget:
             global_widget.trigger_slide_in.emit()
-        time.sleep(0.2)
+
+    keyboard.add_hotkey('ctrl+alt+c', on_hotkey)
+
+    # 無限ループで生存維持（必要）
+    while True:
+        time.sleep(1)
 
 def get_calendar_colors(service):
     calendar_colors={}
@@ -739,6 +774,9 @@ def init_screen_dependent_values(app):
     START_X=SCREEN_WIDTH
     END_X=SCREEN_WIDTH-WINDOW_WIDTH
     PIXELS_PER_HOUR=WINDOW_HEIGHT/(END_HOUR-START_HOUR)
+    #print(f"SCREEN_WIDTH: {SCREEN_WIDTH}")
+    #print(f"SCREEN_HEIGHT: {SCREEN_HEIGHT}")
+    #print(f"PIXELS_PER_HOUR: {PIXELS_PER_HOUR}")
 
 
 
@@ -833,7 +871,7 @@ if __name__ == '__main__':
 
 
     service= get_calendar_service()
-    global_widget = SlideWidget(service)
+    global_widget = SlideWidget(app,service)
 
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=run_hotkey_listener, daemon=True).start()
