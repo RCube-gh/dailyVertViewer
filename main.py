@@ -1,14 +1,22 @@
 import os
 import sys
 import time
+import psutil
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QFrame, QHBoxLayout, QStackedWidget, QSizePolicy
 from PyQt5.QtGui import QFont, QFontDatabase, QMovie
 from PyQt5.QtCore import Qt, QTimer, QPoint, QPropertyAnimation, pyqtSignal, QThread
 import qt_material
-import keyboard  # pip install keyboard
+#import keyboard  # pip install keyboard
 from pynput import keyboard as pkb
+
+from PyQt5.QtCore import QAbstractNativeEventFilter
+import ctypes
+from ctypes import wintypes
+from PyQt5 import sip  # or PyQt5.sip
+import win32pipe
+import win32file
 
 from datetime import datetime, timedelta, timezone,date
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -23,6 +31,8 @@ import json
 
 from winotify import Notification
 
+
+
 load_dotenv()
 
 JST = timezone(timedelta(hours=9))
@@ -30,6 +40,10 @@ JST = timezone(timedelta(hours=9))
 TOGGL_API_TOKEN = os.getenv("TOGGL_API_TOKEN")
 TOGGL_WORKSPACE_ID = os.getenv("TOGGL_WORKSPACE_ID")
 TOGGL_USER_AGENT = os.getenv("TOGGL_USER_AGENT")
+
+WM_CUSTOM_HOTKEY=0x0400+123
+
+log_path="dailyVertViewer.log"
 
 # === スライドUI設定 ===
 
@@ -58,8 +72,6 @@ LEFT_WIDTH=200
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 # グローバル変数としてウィジェット保持
 global_widget = None
-
-
 
 
 
@@ -153,8 +165,10 @@ class ToastRedirector:
 
 
 
-sys.stdout=ToastRedirector()
+#sys.stdout=ToastRedirector()
 #sys.stdout=sys.__stdout__
+sys.stdout=open(log_path,"a",encoding="utf-8")
+sys.stderr=sys.stdout
 
 
 
@@ -180,6 +194,7 @@ class SlideWidget(QWidget):
     def init_ui(self):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setGeometry(START_X, Y_POSITION, WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.setWindowTitle("dailyVertViewer")
 
         self.anim_in = QPropertyAnimation(self, b"pos")
         self.anim_in.setDuration(SLIDE_DURATION)
@@ -666,8 +681,22 @@ class SlideWidget(QWidget):
             elif self.display_mode=='todo':
                 self.display_mode='calendar'
             self.update_display_mode()
+        elif event.key()==Qt.Key_F12:
+            self.slide_in()
 
 
+class HotkeyEventFilter(QAbstractNativeEventFilter):
+    def nativeEventFilter(self, eventType, message):
+        try:
+            msg_ptr = ctypes.cast(message, ctypes.POINTER(wintypes.MSG))
+            msg = msg_ptr.contents
+            if msg.message == WM_CUSTOM_HOTKEY:
+                #print("[HOTKEY] Received WM_CUSTOM_HOTKEY")  # 通知で出るはず
+                if global_widget:
+                    global_widget.trigger_slide_in.emit()
+        except Exception as e:
+            print(f"[HOTKEY] Exception: {e}")
+        return False, 0
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -697,17 +726,60 @@ def run_http_server():
     server.serve_forever()
 
 
-def run_hotkey_listener():
-    def on_hotkey():
-        #print("[HOTKEY] Ctrl+Alt+C pressed!")
-        if global_widget:
-            global_widget.trigger_slide_in.emit()
 
-    keyboard.add_hotkey('ctrl+alt+c', on_hotkey)
 
-    # 無限ループで生存維持（必要）
+# グローバルスコープに参照を保持
+#hotkey_job = None
+
+#def run_hotkey_listener():
+#    def on_hotkey():
+#        # print("[HOTKEY] Ctrl+Alt+C pressed!")
+#        if global_widget:
+#            global_widget.trigger_slide_in.emit()
+#
+#    global hotkey_job
+#    hotkey_job = keyboard.add_hotkey('ctrl+alt+c', on_hotkey)
+#
+#    while True:
+#        time.sleep(1)
+#
+
+def pipe_listener():
+    import traceback
+    print("[PIPE] pipe_listener() started!")  # ← これが通知で出るか確認！！
+    pipe_name = r'\\.\pipe\DailyVertPipe'
+
     while True:
-        time.sleep(1)
+        try:
+            print("[PIPE] Creating pipe...")
+            pipe = win32pipe.CreateNamedPipe(
+                pipe_name,
+                win32pipe.PIPE_ACCESS_INBOUND,
+                win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
+                1, 65536, 65536, 0, None
+            )
+            print("[PIPE] Pipe created, waiting for connection...")
+
+            win32pipe.ConnectNamedPipe(pipe, None)
+            print("[PIPE] Connected!")
+
+            while True:
+                result, data = win32file.ReadFile(pipe, 64*1024)
+                msg = data.decode('utf-8').strip()
+                print(f"[PIPE] Received: {msg}")
+                if msg == "SHOW" and global_widget:
+                    global_widget.trigger_slide_in.emit()
+        except Exception as e:
+            print("[PIPE] Exception caught:")
+            traceback.print_exc()
+        finally:
+            try:
+                win32file.CloseHandle(pipe)
+            except:
+                pass
+            print("[PIPE] Pipe closed")
+
+
 
 def get_calendar_colors(service):
     calendar_colors={}
@@ -865,15 +937,21 @@ def get_structured_toggl_entries()->list[dict]:
 
 if __name__ == '__main__':
 
+    print("[MAIN] App starting")
+    sys.stdout.flush()
     app = QApplication(sys.argv)
     qt_material.apply_stylesheet(app, theme='dark_blue.xml')
     init_screen_dependent_values(app)
+    app.installNativeEventFilter(HotkeyEventFilter())
 
 
     service= get_calendar_service()
     global_widget = SlideWidget(app,service)
 
     threading.Thread(target=run_http_server, daemon=True).start()
-    threading.Thread(target=run_hotkey_listener, daemon=True).start()
+    #threading.Thread(target=run_hotkey_listener, daemon=True).start()
+    print("[MAIN] Launching pipe_listener thread")
+    threading.Thread(target=pipe_listener, daemon=True).start()
+
 
     sys.exit(app.exec_())
