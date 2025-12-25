@@ -60,7 +60,7 @@ WINDOW_WIDTH = 500
 WINDOW_HEIGHT = None
 START_X = None
 END_X = None
-Y_POSITION = 0
+Y_POSITION = 42
 SLIDE_DURATION = 200
 HTTP_PORT = 8765
 PIXELS_PER_HOUR = None  # 1時間ごとの高さ
@@ -772,6 +772,7 @@ def pipe_listener():
         except Exception as e:
             print("[PIPE] Exception caught:")
             traceback.print_exc()
+            time.sleep(1)  # Prevent busy loop if pipe creation fails
         finally:
             try:
                 win32file.CloseHandle(pipe)
