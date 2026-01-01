@@ -60,7 +60,7 @@ WINDOW_WIDTH = 500
 WINDOW_HEIGHT = None
 START_X = None
 END_X = None
-Y_POSITION = 42
+Y_POSITION = 55
 SLIDE_DURATION = 200
 HTTP_PORT = 8765
 PIXELS_PER_HOUR = None  # 1時間ごとの高さ
@@ -79,6 +79,8 @@ def fetch_all_clickup_tasks():
     list_id = os.getenv("CLICKUP_LIST_ID")
     token = os.getenv("CLICKUP_API_TOKEN")
 
+    print(f"[CLICKUP] Fetching tasks for list {list_id}...")
+
     url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
     headers = {
         "Authorization": token,
@@ -89,11 +91,17 @@ def fetch_all_clickup_tasks():
         "subtasks": "true"
     }
 
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code == 200:
-        return response.json().get("tasks", [])
-    else:
-        print(f"[ERROR] Failed to fetch tasks: {response.status_code} - {response.text}")
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code == 200:
+            tasks = response.json().get("tasks", [])
+            print(f"[CLICKUP] Fetched {len(tasks)} tasks")
+            return tasks
+        else:
+            print(f"[ERROR] Failed to fetch tasks: {response.status_code} - {response.text}")
+            return []
+    except Exception as e:
+        print(f"[ERROR] ClickUp Exception: {e}")
         return []
 
 
@@ -136,21 +144,31 @@ class SafeFullFetcherThread(QThread):
 
     def run(self):
         try:
+            print("[THREAD] SafeFullFetcherThread START")
             SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
             creds = Credentials.from_authorized_user_info(json.loads(self.token_json_str), SCOPES)
             service = build('calendar', 'v3', credentials=creds)
 
             calendar_colors = get_calendar_colors(service)
             events = fetch_today_events(service, calendar_colors)
+            print(f"[THREAD] Calendar events fetched: {len(events)}")
+
             toggl_entries = get_structured_toggl_entries()
+            print(f"[THREAD] Toggl entries fetched: {len(toggl_entries)}")
+
             clickup_tasks=fetch_all_clickup_tasks()
+            print(f"[THREAD] ClickUp tasks fetched: {len(clickup_tasks)}")
+
             today = datetime.now(JST).date()
 
 
             self.finished.emit(events, toggl_entries,clickup_tasks, today)
+            print("[THREAD] SafeFullFetcherThread DONE")
 
         except Exception as e:
             print(f"[ERROR] SafeFullFetcherThread failed: {e}")
+            import traceback
+            traceback.print_exc()
 
 class ToastRedirector:
     def write(self,message):
@@ -460,6 +478,7 @@ class SlideWidget(QWidget):
         #self.add_event("Meeting", 11, 0, 1.0, color="#fbbc04", side='left')
         #self.add_event("Lunch", 12, 30, 1.0, color="#34a853", side='left')
 
+        print(f"[DISPLAY] Adding {len(self.cached_toggl_entries)} toggl entries")
         for entry in self.cached_toggl_entries:
             start_dt=parser.isoparse(entry["start"])
             end_dt=datetime.now(JST) if entry.get("running") else parser.isoparse(entry["end"])
@@ -496,6 +515,7 @@ class SlideWidget(QWidget):
         return "date" in event.get("start", {})
 
     def handle_fetched_data(self,events,toggl_entries,clickup_tasks,today):
+        print(f"[DATA] Received {len(events)} events, {len(toggl_entries)} toggl, {len(clickup_tasks)} tasks")
         normal_events=[]
         allday_events=[]
         self.cached_date=today
@@ -512,6 +532,8 @@ class SlideWidget(QWidget):
         today_ms, tomorrow_ms = get_today_range_unix_ms()
         parent_lookup = {task["id"]: task for task in clickup_tasks}
         today_tasks = [t for t in clickup_tasks if is_due_today(t,parent_lookup,today_ms,tomorrow_ms)]
+        print(f"[DATA] ClickUp tasks due today: {len(today_tasks)}")
+
         parent_tasks = []
         subtask_map = {}
 
@@ -528,6 +550,7 @@ class SlideWidget(QWidget):
         self.display_content()
         self.loading_overlay.raise_()
         self.loading_spinner.raise_()
+
 
     def display_cached_events(self):
         #print("display_cached_events")
@@ -857,27 +880,61 @@ def init_screen_dependent_values(app):
 def fetch_projects(workspace_id):
     url = f"https://api.track.toggl.com/api/v9/workspaces/{workspace_id}/projects"
     auth = (TOGGL_API_TOKEN, "api_token")
-    r = requests.get(url, auth=auth)
-    if r.status_code == 200:
-        return {
-            p["id"]: {
-                "name": p.get("name", "(no name)"),
-                "color": p.get("color", "#cccccc")
+    try:
+        r = requests.get(url, auth=auth)
+        if r.status_code == 200:
+            return {
+                p["id"]: {
+                    "name": p.get("name", "(no name)"),
+                    "color": p.get("color", "#cccccc")
+                }
+                for p in r.json()
             }
-            for p in r.json()
-        }
+        print(f"[ERROR] Fetch Projects Failed: {r.status_code} {r.text}")
+    except Exception as e:
+        print(f"[ERROR] Fetch Projects Exception: {e}")
     return {}
 
-# Format a finished entry
-def format_entry(entry, running=False):
+# Format a finished entry from V9 API
+def format_entry_v9(entry, projects):
+    pid = entry.get("project_id")
+    # If no project, we skip or mark as no project. Original logic skipped if project was None.
+    # But V9 entries might have no project.
+    if pid is None:
+        return None
+        
+    project_info = projects.get(pid, {"name": "(no project)", "color": "#cccccc"})
+    
+    # Resolve color if it is an index (Toggl API sometimes returns index/name only? V9 usually needs PID mapping)
+    # The project_info color from V9 projects endpoint is usually a hex or a specific color ID. 
+    # Let's assume hex for now or use default.
+    color=project_info.get("color","#cccccc")
+    if not color.startswith("#"):
+         # Basic color mapping or default if not hex
+         color = "#cccccc"
+
+    # Start/End handling
+    # V9 returns "start" in ISO. "duration" in seconds (negative if running).
+    # If running, duration is -epoch.
+    duration = entry.get("duration", 0)
+    running = (duration < 0)
+    
+    # We only want finished entries here mostly, but the original logic fetched details which were finished.
+    # Current running entry is handled separately.
+    if running:
+        return None # Skip running entry here, handled by get_current
+
+    start_dt = parser.isoparse(entry["start"])
+    end_dt = start_dt + timedelta(seconds=duration)
+    
     return {
         "description": entry.get("description", "(no description)"),
-        "project": entry.get("project") or "(no project)",
-        "start": parser.isoparse(entry["start"]).astimezone(JST).isoformat(),
-        "end": parser.isoparse(entry["end"]).astimezone(JST).isoformat(),
-        "duration_ms": entry.get("dur", 0),
-        "color": entry.get("project_hex_color") or "#cccccc",
-        "running": running
+        "project": project_info["name"],
+        "start": start_dt.astimezone(JST).isoformat(),
+        "end": end_dt.astimezone(JST).isoformat(),
+        "duration_ms": duration * 1000,
+        "color": color,
+        "running": False
     }
 
 # Format the running entry
@@ -905,33 +962,45 @@ def format_current_entry(entry, projects):
 
 
 def get_structured_toggl_entries()->list[dict]:
+    print("[TOGGL] Fetching Toggl entries...")
     structured=[]
-    today = datetime.now(JST).date().isoformat()
-    url = "https://api.track.toggl.com/reports/api/v2/details"
+    projects = fetch_projects(TOGGL_WORKSPACE_ID)
+    
+    # 1. Get time entries for today (V9)
+    today_start = datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = datetime.now(JST).replace(hour=23, minute=59, second=59, microsecond=0)
+    
+    url = "https://api.track.toggl.com/api/v9/me/time_entries"
     params = {
-        "workspace_id": TOGGL_WORKSPACE_ID,
-        "since": today,
-        "until": today,
-        "user_agent": TOGGL_USER_AGENT
+        "start_date": today_start.astimezone(timezone.utc).isoformat(),
+        "end_date": today_end.astimezone(timezone.utc).isoformat()
     }
+    
+    try:
+        response = requests.get(url, auth=(TOGGL_API_TOKEN, "api_token"), params=params)
 
-    response = requests.get(url, auth=(TOGGL_API_TOKEN, "api_token"), params=params)
+        if response.status_code == 200:
+            raw_data = response.json()
+            print(f"[TOGGL] Found {len(raw_data)} entries (V9)")
+            for e in raw_data:
+                formatted = format_entry_v9(e, projects)
+                if formatted:
+                    structured.append(formatted)
+        else:
+            print(f"[ERROR] Toggl API V9: {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"[ERROR] Toggl API Exception: {e}")
 
-
-    if response.status_code == 200:
-        raw_data = response.json().get("data", [])
-        structured += [format_entry(e) for e in raw_data if e.get("project") is not None]
-    else:
-        print(f"[ERROR] v2 report API: {response.status_code}: {response.text}")
-
-    # Step 2: Get current running entry
-    r = requests.get("https://api.track.toggl.com/api/v9/me/time_entries/current", auth=(TOGGL_API_TOKEN, "api_token"))
-    if r.status_code == 200:
-        current_entry = r.json()
-        if current_entry:
-            workspace_id = current_entry.get("workspace_id")
-            projects = fetch_projects(workspace_id)
-            structured.append(format_current_entry(current_entry, projects))
+    # 2. Get current running entry
+    try:
+        r = requests.get("https://api.track.toggl.com/api/v9/me/time_entries/current", auth=(TOGGL_API_TOKEN, "api_token"))
+        if r.status_code == 200:
+            current_entry = r.json()
+            if current_entry:
+                structured.append(format_current_entry(current_entry, projects))
+                print("[TOGGL] Found current running entry")
+    except Exception as e:
+         print(f"[ERROR] Toggl Current Entry Exception: {e}")
 
     return structured
 
