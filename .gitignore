@@ -1,6 +1,17 @@
 .env
+.vscode/
 token.json
 __pycache__/
 *.pyc
 .venv/
 credentials.json
+build/
+dist/
+dailyVertViewer.log
+diagnose.py
+diagnose_apis.py
+hotkey_launcher.exe
+hotkey_launcher.obj
+main.spec
+DailyVertViewer.Wpf/bin/
+DailyVertViewer.Wpf/obj/
